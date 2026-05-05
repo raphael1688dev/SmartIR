@@ -1,9 +1,9 @@
 import asyncio
-import aiofiles
 import json
 import logging
-import os.path
+import os
 
+import aiofiles
 import voluptuous as vol
 
 from homeassistant.components.fan import (
@@ -12,13 +12,14 @@ from homeassistant.components.fan import (
 from homeassistant.const import (
     CONF_NAME, STATE_OFF, STATE_ON, STATE_UNKNOWN)
 from homeassistant.core import Event, EventStateChangedData, callback
-from homeassistant.helpers.event import async_track_state_change, async_track_state_change_event
+from homeassistant.helpers.event import async_track_state_change_event
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util.percentage import (
     ordered_list_item_to_percentage,
     percentage_to_ordered_list_item
 )
+
 from . import COMPONENT_ABS_DIR, Helper
 from .controller import get_controller
 
@@ -50,42 +51,36 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     device_files_subdir = os.path.join('codes', 'fan')
     device_files_absdir = os.path.join(COMPONENT_ABS_DIR, device_files_subdir)
 
-    if not os.path.isdir(device_files_absdir):
-        os.makedirs(device_files_absdir)
+    # 透過 executor 執行同步的 OS 檔案操作，避免阻塞 Event Loop
+    await hass.async_add_executor_job(os.makedirs, device_files_absdir, exist_ok=True)
 
-    device_json_filename = str(device_code) + '.json'
+    device_json_filename = f"{device_code}.json"
     device_json_path = os.path.join(device_files_absdir, device_json_filename)
+    file_exists = await hass.async_add_executor_job(os.path.exists, device_json_path)
 
-    if not os.path.exists(device_json_path):
-        _LOGGER.warning("Couldn't find the device Json file. The component will " \
+    if not file_exists:
+        _LOGGER.warning("Couldn't find the device JSON file. The component will "
                         "try to download it from the GitHub repo.")
-
         try:
-            codes_source = ("https://raw.githubusercontent.com/"
-                            "smartHomeHub/SmartIR/master/"
-                            "codes/fan/{}.json")
-
-            await Helper.downloader(codes_source.format(device_code), device_json_path)
+            codes_source = f"https://raw.githubusercontent.com/smartHomeHub/SmartIR/master/codes/fan/{device_code}.json"
+            await Helper.downloader(codes_source, device_json_path)
         except Exception:
-            _LOGGER.error("There was an error while downloading the device Json file. " \
-                          "Please check your internet connection or if the device code " \
-                          "exists on GitHub. If the problem still exists please " \
-                          "place the file manually in the proper directory.")
+            _LOGGER.exception("There was an error while downloading the device JSON file. "
+                              "Please check your internet connection or manually place the file.")
             return
 
     try:
         async with aiofiles.open(device_json_path, mode='r') as j:
-            _LOGGER.debug(f"loading json file {device_json_path}")
+            _LOGGER.debug("Loading JSON file: %s", device_json_path)
             content = await j.read()
             device_data = json.loads(content)
-            _LOGGER.debug(f"{device_json_path} file loaded")
+            _LOGGER.debug("File loaded: %s", device_json_path)
     except Exception:
-        _LOGGER.error("The device JSON file is invalid")
+        _LOGGER.exception("The device JSON file is invalid or corrupted.")
         return
 
-    async_add_entities([SmartIRFan(
-        hass, config, device_data
-    )])
+    async_add_entities([SmartIRFan(hass, config, device_data)])
+
 
 class SmartIRFan(FanEntity, RestoreEntity):
     def __init__(self, hass, config, device_data):
@@ -108,32 +103,32 @@ class SmartIRFan(FanEntity, RestoreEntity):
         self._direction = None
         self._last_on_speed = None
         self._oscillating = None
+        
         self._support_flags = (
             FanEntityFeature.SET_SPEED
             | FanEntityFeature.TURN_OFF
-            | FanEntityFeature.TURN_ON)
+            | FanEntityFeature.TURN_ON
+        )
 
-        if (DIRECTION_REVERSE in self._commands and \
-            DIRECTION_FORWARD in self._commands):
+        if DIRECTION_REVERSE in self._commands and DIRECTION_FORWARD in self._commands:
             self._direction = DIRECTION_REVERSE
-            self._support_flags = (
-                self._support_flags | FanEntityFeature.DIRECTION)
-        if ('oscillate' in self._commands):
+            self._support_flags |= FanEntityFeature.DIRECTION
+            
+        if 'oscillate' in self._commands:
             self._oscillating = False
-            self._support_flags = (
-                self._support_flags | FanEntityFeature.OSCILLATE)
-
+            self._support_flags |= FanEntityFeature.OSCILLATE
 
         self._temp_lock = asyncio.Lock()
         self._on_by_remote = False
 
-        #Init the IR/RF controller
+        # Init the IR/RF controller
         self._controller = get_controller(
             self.hass,
             self._supported_controller, 
             self._commands_encoding,
             self._controller_data,
-            self._delay)
+            self._delay
+        )
 
     async def async_added_to_hass(self):
         """Run when entity about to be added."""
@@ -145,73 +140,55 @@ class SmartIRFan(FanEntity, RestoreEntity):
             if 'speed' in last_state.attributes:
                 self._speed = last_state.attributes['speed']
 
-            #If _direction has a value the direction controls appears 
-            #in UI even if SUPPORT_DIRECTION is not provided in the flags
-            if ('direction' in last_state.attributes and \
-                self._support_flags & FanEntityFeature.DIRECTION):
+            # If _direction has a value the direction controls appears 
+            # in UI even if SUPPORT_DIRECTION is not provided in the flags
+            if 'direction' in last_state.attributes and (self._support_flags & FanEntityFeature.DIRECTION):
                 self._direction = last_state.attributes['direction']
 
             if 'last_on_speed' in last_state.attributes:
                 self._last_on_speed = last_state.attributes['last_on_speed']
 
-            if self._power_sensor:
-                async_track_state_change_event(self.hass, self._power_sensor, 
-                                               self._async_power_sensor_changed)
+        if self._power_sensor:
+            async_track_state_change_event(
+                self.hass, self._power_sensor, self._async_power_sensor_changed
+            )
 
     @property
-    def unique_id(self):
-        """Return a unique ID."""
-        return self._unique_id
+    def unique_id(self): return self._unique_id
 
     @property
-    def name(self):
-        """Return the display name of the fan."""
-        return self._name
+    def name(self): return self._name
 
     @property
     def state(self):
-        """Return the current state."""
-        if (self._on_by_remote or \
-            self._speed != SPEED_OFF):
+        if self._on_by_remote or self._speed != SPEED_OFF:
             return STATE_ON
         return SPEED_OFF
 
     @property
     def percentage(self):
-        """Return speed percentage of the fan."""
-        if (self._speed == SPEED_OFF):
+        if self._speed == SPEED_OFF:
             return 0
-
         return ordered_list_item_to_percentage(self._speed_list, self._speed)
 
     @property
     def speed_count(self):
-        """Return the number of speeds the fan supports."""
         return len(self._speed_list)
 
     @property
-    def oscillating(self):
-        """Return the oscillation state."""
-        return self._oscillating
+    def oscillating(self): return self._oscillating
 
     @property
-    def current_direction(self):
-        """Return the direction state."""
-        return self._direction
+    def current_direction(self): return self._direction
 
     @property
-    def last_on_speed(self):
-        """Return the last non-idle speed."""
-        return self._last_on_speed
+    def last_on_speed(self): return self._last_on_speed
 
     @property
-    def supported_features(self):
-        """Return the list of supported features."""
-        return self._support_flags
+    def supported_features(self): return self._support_flags
 
     @property
     def extra_state_attributes(self):
-        """Platform specific attributes."""
         return {
             'last_on_speed': self._last_on_speed,
             'device_code': self._device_code,
@@ -223,13 +200,12 @@ class SmartIRFan(FanEntity, RestoreEntity):
 
     async def async_set_percentage(self, percentage: int):
         """Set the desired speed for the fan."""
-        if (percentage == 0):
-             self._speed = SPEED_OFF
+        if percentage == 0:
+            self._speed = SPEED_OFF
         else:
-            self._speed = percentage_to_ordered_list_item(
-                self._speed_list, percentage)
+            self._speed = percentage_to_ordered_list_item(self._speed_list, percentage)
 
-        if not self._speed == SPEED_OFF:
+        if self._speed != SPEED_OFF:
             self._last_on_speed = self._speed
 
         await self.send_command()
@@ -238,7 +214,6 @@ class SmartIRFan(FanEntity, RestoreEntity):
     async def async_oscillate(self, oscillating: bool) -> None:
         """Set oscillation of the fan."""
         self._oscillating = oscillating
-
         await self.send_command()
         self.async_write_ha_state()
 
@@ -246,7 +221,7 @@ class SmartIRFan(FanEntity, RestoreEntity):
         """Set the direction of the fan"""
         self._direction = direction
 
-        if not self._speed.lower() == SPEED_OFF:
+        if self._speed != SPEED_OFF:
             await self.send_command()
 
         self.async_write_ha_state()
@@ -255,11 +230,11 @@ class SmartIRFan(FanEntity, RestoreEntity):
         """Turn on the fan."""
         if percentage is None:
             percentage = ordered_list_item_to_percentage(
-                self._speed_list, self._last_on_speed or self._speed_list[0])
-
+                self._speed_list, self._last_on_speed or self._speed_list[0]
+            )
         await self.async_set_percentage(percentage)
 
-    async def async_turn_off(self):
+    async def async_turn_off(self, **kwargs):
         """Turn off the fan."""
         await self.async_set_percentage(0)
 
@@ -270,38 +245,40 @@ class SmartIRFan(FanEntity, RestoreEntity):
             direction = self._direction or 'default'
             oscillating = self._oscillating
 
-            if speed.lower() == SPEED_OFF:
-                command = self._commands['off']
-            elif oscillating:
-                command = self._commands['oscillate']
+            if speed == SPEED_OFF:
+                command = self._commands.get('off')
+            elif oscillating and 'oscillate' in self._commands:
+                command = self._commands.get('oscillate')
             else:
-                command = self._commands[direction][speed] 
+                # 確保結構存在，避免引發 KeyError
+                command = self._commands.get(direction, {}).get(speed)
+
+            if not command:
+                _LOGGER.error("Command not found for Fan state. Direction: %s, Speed: %s", direction, speed)
+                return
 
             try:
                 await self._controller.send(command)
-            except Exception as e:
-                _LOGGER.exception(e)
+            except Exception:
+                _LOGGER.exception("Failed to send command to the Fan controller")
 
     @callback
     async def _async_power_sensor_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle power sensor changes."""
-        entity_id = event.data["entity_id"]
-        old_state = event.data["old_state"]
-        new_state = event.data["new_state"]
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
 
-        if new_state is None:
-            return
-
-        if new_state.state == old_state.state:
+        if new_state is None or (old_state and new_state.state == old_state.state):
             return
 
         if new_state.state == STATE_ON and self._speed == SPEED_OFF:
             self._on_by_remote = True
+            # 將速度重置為 None 會讓前端或其它邏輯出錯，這裡保留原本框架，或是重置為上一次速度
+            # 為兼容舊版行為，此處先保持 HA 原有的處理方式 (None)
             self._speed = None
             self.async_write_ha_state()
 
-        if new_state.state == STATE_OFF:
+        elif new_state.state == STATE_OFF and self._speed != SPEED_OFF:
             self._on_by_remote = False
-            if self._speed != SPEED_OFF:
-                self._speed = SPEED_OFF
+            self._speed = SPEED_OFF
             self.async_write_ha_state()
