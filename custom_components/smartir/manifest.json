@@ -1,15 +1,16 @@
 {
   "domain": "smartir",
   "name": "SmartIR",
-  "documentation": "https://github.com/smartHomeHub/SmartIR",
+  "documentation": "https://github.com/raphael1688dev/SmartIR",
+  "issue_tracker": "https://github.com/raphael1688dev/SmartIR/issues"
   "dependencies": [],
   "codeowners": ["@smartHomeHub"],
   "requirements": ["aiofiles>=0.6.0"],
   "homeassistant": "2025.5.0",
-  "version": "1.18.1",
+  "version": "20260505r1",
   "updater": {
-    "version": "1.18.1",
-    "releaseNotes": "-- Implements new async_track_state_change_event",
+    "version": "20260505r1",
+    "releaseNotes": "-- Implements zero-polling architecture, modern async I/O, and awesomeversion compatibility",
     "files": [
       "__init__.py",
       "climate.py",
